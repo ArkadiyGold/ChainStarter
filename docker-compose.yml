@@ -1,0 +1,101 @@
+services:
+  db:
+    image: postgres:16
+    container_name: chainstarter-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: chainstarter
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./backend/schema.sql:/docker-entrypoint-initdb.d/1-schema.sql
+      - ./backend/marts.sql:/docker-entrypoint-initdb.d/2-marts.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d chainstarter"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  hardhat:
+    build:
+      context: .
+      dockerfile: Dockerfile.hardhat
+    container_name: chainstarter-hardhat
+    ports:
+      - "8545:8545"
+
+  deploy:
+    build:
+      context: .
+      dockerfile: Dockerfile.hardhat
+    container_name: chainstarter-deploy
+    command: npx hardhat run scripts/deploy.js --network localhost
+    environment:
+      RPC_URL: http://hardhat:8545
+    depends_on:
+      - hardhat
+    volumes:
+      - ./deployments:/app/deployments
+
+  ingest:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: chainstarter-ingest
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: chainstarter
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      RPC_URL: http://hardhat:8545
+    depends_on:
+      db:
+        condition: service_healthy
+      deploy:
+        condition: service_completed_successfully
+    volumes:
+      - ./deployments:/app/deployments
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ./analytics
+      dockerfile: Dockerfile
+    container_name: chainstarter-dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: chainstarter
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      RPC_URL: http://hardhat:8545
+    depends_on:
+      db:
+        condition: service_healthy
+      deploy:
+        condition: service_completed_successfully
+    volumes:
+      - ./deployments:/app/deployments
+
+  simulate:
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile
+    container_name: chainstarter-simulate
+    environment:
+      RPC_URL: http://hardhat:8545
+    depends_on:
+      deploy:
+        condition: service_completed_successfully
+      ingest:
+        condition: service_started
+    volumes:
+      - ./deployments:/app/deployments
+
+volumes:
+  pg_data:
